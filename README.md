@@ -66,4 +66,6 @@ Your submission will be evaluated against four criteria:
 - originality and creativity of the proposed answer/solution
 - organization and clarity of submitted materials
 
-Appendix: Feature descriptions for Insurance_claims.csv
+#### Appendix
+Feature descriptions for Insurance_claims.csv
+![](https://github.com/ba-group-projects/applied-deep-learning-gp1/blob/main/dataset_appendix.jpg)
