@@ -1,0 +1,538 @@
+#%% import libraries
+
+from distutils.log import error
+from turtle import color
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import tensorflow as tf
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import confusion_matrix
+import imblearn
+import os
+#%% Notes
+# unbalanced data set:
+# even predict all as non-fraud, the accuracy will be higher than the one actual prediction 
+
+#%% 
+df = pd.read_csv('./materials/Insurance_claims.csv')
+df.T
+
+
+# Data Cleaning and Feature Engineering
+#%%
+#check each row  of the dataset if duplicated
+dups = df.duplicated() 
+print(df[dups]) # 8 rows are duplicated
+df.drop_duplicates(inplace=True)
+print(df.shape) # (11522,24)
+
+#%%
+#check unique column of the dataset
+df.nunique()
+
+# %%
+# Drop the columns that we consider that are not relevant 
+# drop column InsureNotes - text
+df = df.drop(columns=['InsurerNotes'])
+
+#%% check Na values
+df.isna().sum()
+
+#%% Fill NA
+# Category variables fill Na value of with None in the original dataset
+df['FirstPartyVehicleNumber'].fillna('None',inplace=True)
+df['ThirdPartyVehicleNumber'].fillna('None',inplace=True)
+df['DamageImportance'].fillna('None',inplace=True)
+df['PolicyholderOccupation'].fillna('None',inplace=True)
+df['ClaimCause'].fillna('None',inplace=True)
+df['ClaimInvolvedCovers'].fillna('None',inplace=True)
+df['FirstPartyVehicleType'].fillna('None', inplace=True)
+df['ConnectionBetweenParties'].fillna('None', inplace=True)
+
+
+#%% Numerical fill NA values and wrong values
+
+# drop the negative value of the variable FpVehicleAgeMonths
+df.drop(df[df['FpVehicleAgeMonths'] <0 ].index,inplace=True)
+
+#separate two dataset (fraud, non-fraud)
+df_fraud = df[df['Fraud'] ==1]
+df_nonfraud = df[df['Fraud'] ==0]
+df_fraud.mean()
+df_nonfraud.mean()
+
+
+#%%fill NA values within two subsets
+df_fraud['FpVehicleAgeMonths'].fillna(df_fraud['FpVehicleAgeMonths'].mean(),inplace=True)
+df_fraud['LossHour'].fillna(df_fraud['LossHour'].mean(),inplace=True)
+
+df_nonfraud['FpVehicleAgeMonths'].fillna(df_nonfraud['FpVehicleAgeMonths'].mean(),inplace=True)
+df_nonfraud['LossHour'].fillna(df_nonfraud['LossHour'].mean(),inplace=True)
+df_nonfraud['PolicyHolderAge'].fillna(df_nonfraud['PolicyHolderAge'].mean(),inplace=True)
+
+#%% Concat two subsets
+df= pd.concat([df_fraud,df_nonfraud])
+
+
+#%% Change column type to  Timestamp (LossDate,FirstPolicySubscriptionDate)
+from datetime import datetime
+df['LossDate'] = pd.to_datetime(df['LossDate'])
+df['FirstPolicySubscriptionDate'] = pd.to_datetime(df['FirstPolicySubscriptionDate'])
+
+df['LossDate'] =df['LossDate'].apply(lambda x: datetime.timestamp(x)) 
+df ['FirstPolicySubscriptionDate']= df ['FirstPolicySubscriptionDate'].apply(lambda x: datetime.timestamp(x))
+
+#%% Dummies variable
+df['FirstPartyVehicleNumber'] =df['FirstPartyVehicleNumber'].apply(lambda x: "Yes" if x!= 'None' else x )
+df['ThirdPartyVehicleNumber'] =df['ThirdPartyVehicleNumber'].apply(lambda x: "Yes" if x!= 'None' else x )
+
+#%%
+# Change the values that are not None of the columns, to have dummies
+df = pd.get_dummies(df, drop_first = True, columns = ['FirstPartyVehicleNumber'])
+df = pd.get_dummies(df, drop_first = True, columns = ['ThirdPartyVehicleNumber'])
+df = pd.get_dummies(df,drop_first=True, columns = ['PolicyholderOccupation'])
+df = pd.get_dummies(df,drop_first=True, columns = ['ClaimCause'])
+df = pd.get_dummies(df, drop_first = True, columns = ['DamageImportance'])
+df = pd.get_dummies(df, drop_first = True, columns = ['FirstPartyVehicleType'])
+df = pd.get_dummies(df, drop_first = True, columns = ['ConnectionBetweenParties'])
+
+#%% ClaimInvolvedCovers columns
+df_count = df['ClaimInvolvedCovers'].str.split(" ", expand=True).apply(pd.value_counts)
+lst = list(df_count.index)
+lst
+
+for cover in lst:
+    df[cover] = df['ClaimInvolvedCovers'].apply(lambda x: 1 if (cover in x) else 0)
+
+df.drop(columns=['ClaimInvolvedCovers'],inplace=True)
+#%%
+
+#%% Feature Engineering
+# 1. The difference between LossDate and FirstPolicySubscriptionDate
+#df['Datedifference']=df['LossDate']-df['FirstPolicySubscriptionDate']
+#df['Datedifference'] = df['Datedifference'].apply(lambda l: l.days)
+# 2. remember to consider the relationship between ClaimWihoutIdentifiedThirdParty (0) and ThirdPartyVehicleNumber_Yes (0)
+
+#%% Deep Neural Network
+# Split dataset
+from sklearn.model_selection import train_test_split
+
+y= df['Fraud']
+X = df.drop(columns= ['Fraud','PolicyholderNumber'])
+
+#%%
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=888)
+
+#%%scale train dataset
+from sklearn.preprocessing import MinMaxScaler
+
+scaler = MinMaxScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
+
+#%% split train to train and validation dataset
+X_train, X_valid, y_train, y_valid = train_test_split(X_train, y_train, test_size = 0.25, random_state=888)
+
+#%% TensorBoard
+%load_ext tensorboard
+from tensorboard.plugins.hparams import api as hp
+#%% create a folder loading results first
+rm -rf ./logs/  
+#%% Using HParams, we define the parameters, as well as the interval over
+HP_LEARNING_RATE = hp.HParam('learning_rate', hp.RealInterval(0.001,0.3))
+HP_OPTIMIZER = hp.HParam('optimizer', hp.Discrete(['adam', 'sgd']))
+# HP_DROPOUT = hp.HParam('dropout', hp.RealInterval(0.1, 0.3))
+HP_NUM_UNITS = hp.HParam('num_units', hp.Discrete(range(10,40)))
+
+METRIC_ACC = 'accuracy'
+
+
+
+#%%
+with tf.summary.create_file_writer('logs/hparam_tuning').as_default():
+    hp.hparams_config(hparams=[HP_LEARNING_RATE, HP_OPTIMIZER, HP_NUM_UNITS], #HP_DROPOUT, 
+                      metrics = [hp.Metric(METRIC_ACC, display_name='ACC')])
+#%% We define a function that creates and trains a model, and evaluates it on the test set.
+def train_test_model3(hparams, run_dir):
+    
+    model = tf.keras.models.Sequential([
+        #tf.keras.layers.Dropout(hparams[HP_DROPOUT]),
+        tf.keras.layers.Dense(hparams[HP_NUM_UNITS], activation="relu"),
+        tf.keras.layers.Dense(hparams[HP_NUM_UNITS], activation="relu"),
+        #tf.keras.layers.Dropout(hparams[HP_DROPOUT]),
+        #tf.keras.layers.Dense(hparams[HP_NUM_UNITS], activation="relu"),
+        tf.keras.layers.Dense(1,activation = 'sigmoid')])
+    
+    if hparams[HP_OPTIMIZER] == 'sgd':
+        # Note that exploding gradients can be a big problem when running regressions, especially under SGD
+        # Hence, we use "gradient clipping" with parameter alpha, which means that the gradients are manually kept between -1 and 1
+        # This is of course another hyperparameter that we might tune!
+        optimizer = tf.keras.optimizers.SGD(learning_rate=hparams[HP_LEARNING_RATE],clipvalue=1)
+    elif hparams[HP_OPTIMIZER] == 'adam':
+        optimizer = tf.keras.optimizers.Adam(learning_rate=hparams[HP_LEARNING_RATE])
+        
+    model.compile( optimizer=optimizer,
+                    loss='binary_crossentropy')
+
+    early_stopping_cb = tf.keras.callbacks.EarlyStopping(patience=10, restore_best_weights=True)
+    
+
+    model.fit(X_train, y_train, epochs=60, callbacks=[early_stopping_cb])
+    model.evaluate(X_valid, y_valid)
+
+
+    with tf.summary.create_file_writer(run_dir).as_default(): #add results to the log folder
+        hp.hparams(hparams)
+        tf.summary.scalar(METRIC_ACC, acc, step=1)
+
+#%%
+total_sessions = 10
+
+for session in range(total_sessions):
+    
+    # Create hyperparameters randomly
+    #dropout_rate = HP_DROPOUT.domain.sample_uniform()
+    num_units = HP_NUM_UNITS.domain.sample_uniform()
+    optimizer = HP_OPTIMIZER.domain.sample_uniform()
+    
+    r = -3*np.random.rand()
+    learning_rate = 10.0**r
+    
+    # Create a dictionary of hyperparameters
+    hparams = { HP_LEARNING_RATE: learning_rate,
+                HP_OPTIMIZER: optimizer,
+                HP_NUM_UNITS: num_units}
+                #HP_DROPOUT: dropout_rate,
+    
+    # train the model with the chosen parameters
+    run_name = "run-%d" % session
+    print('--- Starting trial: %s' % run_name)
+    print({h.name: hparams[h] for h in hparams})
+    train_test_model3(hparams,'logs/hparam_tuning/' + run_name)
+
+
+#%%
+import os
+os.environ['TENSORBOARD_BINARY'] = '/Users/xiaohangan/opt/anaconda3/envs/Deep_learning/tensorboard'
+#%%
+%tensorboard --logdir logs
+
+# %% Build Model
+tf.keras.backend.clear_session()
+np.random.seed(888)
+tf.random.set_seed(888)
+
+model3 = tf.keras.models.Sequential([
+    tf.keras.layers.Dense(20, activation='relu'),
+  tf.keras.layers.Dense(1, activation='sigmoid')
+])
+
+model3.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=0.01),
+              loss='binary_crossentropy',
+              metrics=['accuracy'])
+log3 = model3.fit(X_train, y_train, epochs=60, validation_data=(X_valid, y_valid))
+
+#%% Display the loss on both the training and the validation set
+plt.plot(log3.history['loss'],label = "training loss")
+plt.plot(log3.history['val_loss'], label = "validation loss")
+plt.legend()
+plt.show()
+
+#%%
+plt.plot(log3.history['accuracy'],label = "training accuracy")
+plt.plot(log3.history['val_accuracy'], label = "validation accuracy")
+plt.legend()
+plt.show()
+
+#%% Evaluate Model
+model3.evaluate(X_test, y_test)
+# %% Predict
+y_prob3 = model3.predict(X_test)
+
+#%%
+fpr, tpr, thr = roc_curve(y_test, y_prob3)
+roc_auc = auc(fpr, tpr)
+print('AUC test: ', roc_auc)
+
+sns.set('talk', 'darkgrid', 'dark', font_scale=1, \
+        rc={"lines.linewidth": 2, 'grid.linestyle': '--'})
+
+lw = 2
+plt.figure()
+plt.plot(fpr, tpr, color='darkorange',
+         lw=lw, label='ROC curve (AUC = %0.2f)' % roc_auc)
+plt.plot([0,1], [0, 1], color='navy', lw=lw, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic curve')
+plt.legend(loc="lower right")
+plt.show()
+
+#%% Confusion Matrix
+J3 = tpr - fpr
+print("The best threshold according to the J statistic is " + str(thr[np.argmax(J3)]))
+#%%
+y_predict3= np.where(y_prob3 > thr[np.argmax(J3)], 1, 0)
+cm3 = confusion_matrix(y_test, y_predict3)
+cm3
+
+# Sensitivity = TP/TP+FN = 17/(6+17) = 0.73; Specificity = 1552/(1552+729) = 0.68
+
+
+
+
+# %% Part 5
+
+#split train and test set
+X_train5, X_test5, y_train5, y_test5 = train_test_split(X,y,test_size= 0.2, random_state=888)
+np.sum(y_test5)
+
+#%% scale data
+from sklearn.preprocessing import MinMaxScaler
+scaler = MinMaxScaler()
+X_train5 = scaler.fit_transform(X_train5)
+X_test5 = scaler.transform(X_test5)
+
+
+#%% SMOTE and undersampling 30% minority class within all observations in synth dataset
+
+over = imblearn.over_sampling.SMOTE(sampling_strategy=0.2, random_state = 888)
+under = imblearn.under_sampling.RandomUnderSampler(sampling_strategy=0.5, random_state = 241)
+steps = [('o', over), ('u', under)]
+pipeline = imblearn.pipeline.Pipeline(steps=steps)
+X_synth, y_synth = pipeline.fit_resample(X_train5, y_train5)
+# %% visualise the process
+plt.subplot(1,2,1)
+plt.scatter(X_train5[:, 0], X_train5[:, 1], c=y_train5, s=10, cmap="Accent_r")
+plt.subplot(1,2,2)
+plt.scatter(X_synth[:, 0], X_synth[:, 1], c=y_synth, s=10, cmap="Accent_r")
+# %%
+print(y_train5.shape)
+print(np.sum(y_train5))
+
+print(y_synth.shape)
+print(np.sum(y_synth))
+# %% split to train and validation dataset
+X_train5, X_valid5, y_train5, y_valid5 = train_test_split(X_synth,y_synth, test_size= 0.25, random_state=888)
+print(X_valid5.shape)
+print(X_train5.shape)
+
+#%% To the accuracy in the previous model
+tf.keras.backend.clear_session()
+np.random.seed(888)
+tf.random.set_seed(888)
+
+model5 = tf.keras.models.Sequential([
+    tf.keras.layers.Dense(10, activation='relu'),
+  tf.keras.layers.Dense(1, activation='sigmoid')
+])
+
+model5.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=0.01),
+              loss='binary_crossentropy',
+              metrics=['accuracy'])
+log5 = model5.fit(X_train5, y_train5, epochs=100, validation_data=(X_valid5, y_valid5))
+
+
+#%%
+plt.plot(log5.history['loss'],label = "training loss")
+plt.plot(log5.history['val_loss'], label = "validation loss")
+plt.legend()
+plt.show()
+#%%
+plt.plot(log5.history['accuracy'],label = "training accuracy")
+plt.plot(log5.history['val_accuracy'], label = "validation accuracy")
+plt.legend()
+plt.show()
+
+#%% Evaluate Model
+model5.evaluate(X_test5, y_test5)
+
+# %% Predict
+y_prob5 = model5.predict(X_test5)
+# %% ROC curve
+fpr5, tpr5, thr5 = roc_curve(y_test5, y_prob5)
+roc_auc5 = auc(fpr5, tpr5)
+print('AUC test: ', roc_auc5)
+
+sns.set('talk', 'darkgrid', 'dark', font_scale=1, \
+        rc={"lines.linewidth": 2, 'grid.linestyle': '--'})
+
+lw = 2
+plt.figure()
+plt.plot(fpr5, tpr5, color='darkorange',
+         lw=lw, label='ROC curve (AUC = %0.2f)' % roc_auc5)
+plt.plot([0,1], [0, 1], color='navy', lw=lw, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic curve')
+plt.legend(loc="lower right")
+plt.show()
+
+#%% Confusion Matrix in Model5
+J5 = tpr5 - fpr5
+print("The best threshold according to the J statistic is " + str(thr5[np.argmax(J5)]))
+#%%
+y_predict5= np.where(y_prob5 > thr5[np.argmax(J5)], 1, 0)
+cm5 = confusion_matrix(y_test5, y_predict5)
+cm5
+
+# Sensitivity = TP/TP+FN = 18/(5+18) = 0.78; Specificity = 1839/(1839+442) = 0.806
+
+
+#%% Part 6 
+# split df_fraud dataset into two subset
+y_fraud= df[df['Fraud'] ==1]['Fraud']
+X_fraud = df[df['Fraud'] ==1].drop(columns= ['Fraud','PolicyholderNumber'])
+X_valid_fraud, X_test_fraud, y_valid_fraud, y_test_fraud = train_test_split(
+    X_fraud,y_fraud,test_size = 0.5, random_state = 888)
+
+#%%
+# split df_nonfraud into three subsets
+y_nonfraud = df[df['Fraud'] ==0]['Fraud']
+X_nonfraud = df[df['Fraud'] ==0].drop(columns= ['Fraud','PolicyholderNumber'])
+
+X_train6, X_other_nonfraud, y_train6, y_other_nonfraud = train_test_split(
+    X_nonfraud,y_nonfraud,test_size = 0.4, random_state = 888)
+
+X_valid_nonfraud, X_test_nonfraud, y_valid_nonfraud, y_test_nonfraud = train_test_split(
+    X_other_nonfraud,y_other_nonfraud,test_size = 0.5, random_state = 888)
+
+#%%
+# Train dataset: X_train6
+# merge valid dataset 
+X_valid6 = pd.concat([X_valid_fraud,X_valid_nonfraud])
+X_test6 = pd.concat([X_test_fraud, X_test_nonfraud])
+
+y_valid6 = pd.concat([y_valid_fraud,y_valid_nonfraud])
+y_test6 = pd.concat([y_test_fraud,y_test_nonfraud])
+
+
+#%% Part 7 
+# Scale data
+from sklearn.preprocessing import MinMaxScaler
+scaler = MinMaxScaler()
+X_train6 = scaler.fit_transform(X_train6)
+X_valid6 = scaler.fit_transform(X_valid6)
+X_test6 = scaler.transform(X_test6)
+
+#%% 
+from tensorflow.keras.layers import Flatten, Dense
+tf.keras.backend.clear_session()
+np.random.seed(888)
+tf.random.set_seed(888)
+
+#%%
+reg_param = 0.01
+regularizer = tf.keras.regularizers.l2(reg_param)
+
+encoder = tf.keras.Sequential([
+    Dense(50, activation ='relu', kernel_regularizer=regularizer),
+     Dense(10, activation ='relu', kernel_regularizer=regularizer)
+])
+
+decoder = tf.keras.Sequential([
+    Dense(10, activation ='relu', kernel_regularizer=regularizer),
+    Dense(69, activation="sigmoid", kernel_regularizer=regularizer)]) 
+
+#%%
+autoencoder = tf.keras.Sequential([encoder,decoder]) 
+#%%
+autoencoder.compile(optimizer='adam', loss='mean_squared_error') 
+#%%
+log7= autoencoder.fit(x=X_train6, y=X_train6, 
+                epochs=50,
+                validation_data=(X_valid6, X_valid6))
+
+#%%
+plt.plot(log7.history['loss'],label = "training loss")
+plt.plot(log7.history['val_loss'], label = "validation loss")
+plt.legend()
+plt.show()
+
+#%%
+# evaluate model
+autoencoder.evaluate(X_valid6, X_valid6)
+
+#%% predict validation set
+x_feature7 = autoencoder.predict(X_valid6)
+
+#%% Mean Squared Error in validation set
+mse7 = tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)(X_valid6, x_feature7).numpy()
+
+#%%
+y_label6 = y_valid6.apply(lambda x: 'Fraud' if x == 1 else 'Non-Fraud' )
+#%% Mean Square Error in validation set
+# Average Mean Square Error - set threshold in validation set Part7
+k7 = np.mean(mse7 )  #0.0523
+# %% Plot histogram
+sns.histplot( x= mse7, y= y_label6, hue = y_label6, bins = 20,legend = True)
+plt.axvline(x=k7,color='orange')
+
+
+#%% Part 8
+x_feature8 = autoencoder.predict(X_test6)
+
+#%% Mean Square Error in test set
+mse8 = tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)(X_test6, x_feature8).numpy()
+k8 = np.mean(mse8 )   #0.529
+
+
+#%%
+y_label8 = y_test6.apply(lambda x: 'Fraud' if x == 1 else 'Non-Fraud' )
+
+# %% Plot histogram
+sns.histplot( x= mse8, y= y_label8, hue = y_label8, bins = 20,legend = True)
+plt.axvline(x=k8,color='orange')
+
+
+#%% Mean Square Error in test set
+# Average Mean Square Error - set threshold in test set Part8
+y_predict8= np.where(mse8 > k8, 1, 0)
+cm8 = confusion_matrix(y_test6, y_predict8)
+cm8
+# Sensitivity = TP/TP+FN = 7/(7+51)= 0.120; Specificity =TN/(TN+FP)= 2074/(2074+207) = 0.909
+#%% 
+fpr8, tpr8, thr8 = roc_curve(y_test6, mse8)
+roc_auc8 = auc(fpr8, tpr8)
+print('AUC test: ', roc_auc8)
+
+sns.set('talk', 'darkgrid', 'dark', font_scale=1, \
+        rc={"lines.linewidth": 2, 'grid.linestyle': '--'})
+
+lw = 2
+plt.figure()
+plt.plot(fpr8, tpr8, color='darkorange',
+         lw=lw, label='ROC curve (AUC = %0.2f)' % roc_auc8)
+plt.plot([0,1], [0, 1], color='navy', lw=lw, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic curve')
+plt.legend(loc="lower right")
+plt.show()
+
+#%%
+from sklearn.metrics import roc_auc_score
+roc_auc_score(y_test6,mse8)
+
+#%%
+J8 = tpr8- fpr8
+print('The best threshold according to the J statistic is'+ str(thr8[np.argmax(J8)]))
+#%%
+y_predict_8 = np.where(mse8 >=thr8[np.argmax(J8)],1,0)
+y_predict_8 
+#%%
+cm_8 = confusion_matrix(y_test6,y_predict_8)
+print(cm_8)
+
+# Limitation - Outliers
+
+# %%
