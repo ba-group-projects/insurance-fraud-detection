@@ -1,4 +1,4 @@
-![banner image](https://user-images.githubusercontent.com/61338647/169712489-d792726f-54fe-4254-91a7-9301f889ed64.jpg)
+![banner image](https://thejournal.cii.co.uk/sites/default/files/2021-08/web_Fraud-concept_credit_Tanya%20Antusenok_shutterstock_1852581952.png)
 # Insurance Claim Fraud Detection with Neural Networks
 TODO
 
